@@ -8,3 +8,8 @@ regex
 pandas
 scikit-learn
 datasets
+torch
+transformers[torch]
+sentencepiece
+optimum[onnxruntime]
+evaluate

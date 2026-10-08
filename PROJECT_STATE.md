@@ -10,7 +10,7 @@ Guard-SLM is an ultra-low latency (<20ms) Small Language Model (SLM) security fi
 | :--- | :--- | :--- |
 | **Phase 1** | **FastAPI Proxy & Normalization Defense Layer** | **COMPLETED** |
 | **Phase 2** | **AI Guardrail Dataset Synthesis Engine** | **COMPLETED** |
-| **Phase 3** | **DeBERTa Model Fine-Tuning & Quantized ONNX Export (INT8/FP16)** | PENDING |
+| **Phase 3** | **DeBERTa Model Fine-Tuning & Quantized ONNX Export (INT8/FP16)** | **COMPLETED** |
 | **Phase 4** | **Hybrid Defense & Fast-Path Heuristic Token Filter Engine** | PENDING |
 | **Phase 5** | **Real-Time Security Dashboard & Telemetry Stream** | PENDING |
 | **Phase 6** | **End-to-End Stress Testing, Red-Teaming & Benchmark Harness** | PENDING |
@@ -46,6 +46,17 @@ Guard-SLM is an ultra-low latency (<20ms) Small Language Model (SLM) security fi
   - `data/train.jsonl`: Exactly 1,600 samples (800 Label 0, 800 Label 1; 50.0% balance).
   - `data/val.jsonl`: Exactly 400 samples (200 Label 0, 200 Label 1; 50.0% balance).
   - Strict schema: `{"text": str, "label": int}`.
-- **Verification**:
-  - Comprehensive pytest suite in `tests/test_dataset.py`.
-  - 100% test pass rate across data integrity, schema consistency, stratification, and Base64 detection.
+
+### Phase 3: DeBERTa-v3 Fine-Tuning & Bare-Metal ONNX Compilation
+- **Training Pipeline (`src/model/train_and_export.py`)**:
+  - Fine-tunes `microsoft/deberta-v3-base` via Hugging Face `Trainer`.
+  - Configured binary classification head (`0` -> "SAFE", `1` -> "THREAT").
+  - Explicit tokenizer truncation with strict `max_length=128` context boundary for sub-20ms SLA.
+  - Built-in compatibility layer handling Python 3.14 dill/pickle dictionary hashing.
+- **ONNX Compilation Engine**:
+  - Compiled using `optimum.onnxruntime.ORTModelForSequenceClassification` with `export=True`.
+  - Compiled model (`model.onnx`), tokenizer (`tokenizer.json`, `spm.model`), and configurations saved to `src/model/onnx_guard/`.
+- **Validation Suite (`tests/test_model.py`)**:
+  - Validates `src/model/onnx_guard/` directory and `.onnx` binary artifacts exist.
+  - Confirms zero-error loading into `onnxruntime.InferenceSession`.
+  - Verifies dummy tokenized tensor `[1, 128]` runs successful forward inference producing `(1, 2)` output logits.
