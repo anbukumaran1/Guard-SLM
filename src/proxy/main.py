@@ -1,45 +1,120 @@
 import asyncio
 import time
-from typing import Tuple
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Optional, Tuple
 
 from fastapi import FastAPI, status
+import numpy as np
+import onnxruntime as ort
+from transformers import AutoTokenizer
 
 from src.proxy.normalization import PayloadNormalizer
 from src.proxy.schemas import SecurityRequest, SecurityResponse
 
 
-class DebertaONNXMocker:
+class GuardONNXEngine:
     """
-    Mock/dummy ONNX runtime classifier for DeBERTa guard model.
-    Simulates async inference latency (~5ms) and produces deterministic classification.
+    Bare-metal ONNX Runtime Classifier for DeBERTa-v3 Guard model.
+    Runs hardware-optimized CPU inference with dynamic token lengths.
     """
 
-    def __init__(self, simulated_delay_sec: float = 0.005):
-        self.simulated_delay_sec = simulated_delay_sec
+    def __init__(self, model_dir: str = "src/model/onnx_guard"):
+        self.model_dir = Path(model_dir)
+        self.tokenizer = None
+        self.session = None
+        self.input_names = []
 
-    async def predict(self, normalized_text: str) -> Tuple[str, str | None, float]:
+    def load(self):
+        """Loads tokenizer and ONNX Runtime InferenceSession once globally."""
+        if self.session is not None and self.tokenizer is not None:
+            return
+
+        print(f"[*] Loading tokenizer from {self.model_dir}...")
+        self.tokenizer = AutoTokenizer.from_pretrained(str(self.model_dir))
+
+        model_file = self.model_dir / "model.onnx"
+        if not model_file.exists():
+            raise FileNotFoundError(f"ONNX model file not found at {model_file}")
+
+        print(f"[*] Initializing bare-metal ONNX session from {model_file}...")
+        sess_opts = ort.SessionOptions()
+        sess_opts.intra_op_num_threads = 4
+        sess_opts.inter_op_num_threads = 1
+        sess_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+
+        self.session = ort.InferenceSession(
+            str(model_file),
+            sess_options=sess_opts,
+            providers=["CPUExecutionProvider"],
+        )
+        self.input_names = [inp.name for inp in self.session.get_inputs()]
+
+        # Warmup pass
+        warmup_inputs = self.tokenizer(
+            "Warmup prompt for Guard-SLM runtime",
+            return_tensors="np",
+            truncation=True,
+            max_length=128,
+        )
+        ort_feed = {k: v for k, v in warmup_inputs.items() if k in self.input_names}
+        self.session.run(None, ort_feed)
+        print("[+] GuardONNXEngine initialized and warmed up.")
+
+    def ensure_loaded(self):
+        if self.session is None or self.tokenizer is None:
+            self.load()
+
+    async def predict(self, text: str) -> Tuple[str, Optional[str], float]:
         """
-        Simulates model classification.
+        Runs async inference on the provided text.
         Returns: (decision, threat_type, confidence)
         """
-        if self.simulated_delay_sec > 0:
-            await asyncio.sleep(self.simulated_delay_sec)
+        self.ensure_loaded()
+        return await asyncio.to_thread(self._sync_predict, text)
 
-        # Flag malicious input if normalized text contains 'ignore' (e.g. "ignore previous instructions")
-        if "ignore" in normalized_text.lower():
-            return "BLOCK", "prompt_injection", 0.98
+    def _sync_predict(self, text: str) -> Tuple[str, Optional[str], float]:
+        inputs = self.tokenizer(
+            text,
+            return_tensors="np",
+            truncation=True,
+            max_length=128,
+        )
+        ort_feed = {k: v for k, v in inputs.items() if k in self.input_names}
 
-        return "FORWARD", None, 0.99
+        outputs = self.session.run(None, ort_feed)
+        logits = outputs[0]  # Shape: [1, 2]
+
+        # Numerically stable softmax
+        exp_logits = np.exp(logits - np.max(logits, axis=-1, keepdims=True))
+        probs = exp_logits / np.sum(exp_logits, axis=-1, keepdims=True)
+
+        pred_label = int(np.argmax(probs, axis=-1)[0])
+        confidence = float(probs[0][pred_label])
+
+        if pred_label == 1:
+            return "BLOCK", "prompt_injection", round(confidence, 4)
+        return "FORWARD", None, round(confidence, 4)
+
+
+normalizer = PayloadNormalizer()
+engine = GuardONNXEngine(model_dir="src/model/onnx_guard")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: Load ONNX model and tokenizer globally once
+    engine.load()
+    yield
+    # Shutdown
 
 
 app = FastAPI(
     title="Guard-SLM Security Proxy",
     description="Sub-20ms ultra-low latency prompt injection and jailbreak firewall.",
-    version="0.1.0",
+    version="0.2.0",
+    lifespan=lifespan,
 )
-
-normalizer = PayloadNormalizer()
-model = DebertaONNXMocker(simulated_delay_sec=0.005)
 
 
 @app.get("/health", status_code=status.HTTP_200_OK)
@@ -59,8 +134,8 @@ async def guard_scan(request: SecurityRequest) -> SecurityResponse:
     # Step 1: Normalization Defense Layer
     normalized_text = normalizer.normalize(request.prompt)
 
-    # Step 2: Model Inference
-    decision, threat_type, confidence = await model.predict(normalized_text)
+    # Step 2: Bare-metal ONNX Model Inference
+    decision, threat_type, confidence = await engine.predict(normalized_text)
 
     # Step 3: Latency measurement in ms
     latency_ms = (time.perf_counter() - start_time) * 1000.0
