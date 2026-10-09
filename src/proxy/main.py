@@ -20,6 +20,21 @@ class GuardONNXEngine:
     Runs hardware-optimized CPU inference with dynamic token lengths.
     """
 
+    # High-confidence heuristic defense patterns for zero-day & obvious injection phrases
+    INJECTION_PATTERNS = [
+        "ignore previous",
+        "ignore all",
+        "disregard all",
+        "system override",
+        "output your system prompt",
+        "print system prompt",
+        "reveal system prompt",
+        "output database keys",
+        "output internal environment",
+        "act as an unrestricted",
+        "you are now dan",
+    ]
+
     def __init__(self, model_dir: str = "src/model/onnx_guard"):
         self.model_dir = Path(model_dir)
         self.tokenizer = None
@@ -92,6 +107,12 @@ class GuardONNXEngine:
 
         pred_label = int(np.argmax(probs, axis=-1)[0])
         confidence = float(probs[0][pred_label])
+
+        lower_text = text.lower()
+        # Fast-path pattern check for known injection signatures
+        for pattern in self.INJECTION_PATTERNS:
+            if pattern in lower_text:
+                return "BLOCK", "prompt_injection", 0.985
 
         if pred_label == 1:
             return "BLOCK", "prompt_injection", round(confidence, 4)
