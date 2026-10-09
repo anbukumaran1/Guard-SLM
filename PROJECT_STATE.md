@@ -12,7 +12,7 @@ Guard-SLM is an ultra-low latency (<20ms) Small Language Model (SLM) security fi
 | **Phase 2** | **AI Guardrail Dataset Synthesis Engine** | **COMPLETED** |
 | **Phase 3** | **DeBERTa Model Fine-Tuning & Quantized ONNX Export (INT8/FP16)** | **COMPLETED** |
 | **Phase 4** | **Bare-Metal ONNX Proxy Integration & Concurrency Benchmark** | **COMPLETED** |
-| **Phase 5** | **Real-Time Security Dashboard & Telemetry Stream** | PENDING |
+| **Phase 5** | **Real-Time Security Dashboard & Telemetry Stream** | **COMPLETED** |
 | **Phase 6** | **End-to-End Stress Testing, Red-Teaming & Benchmark Harness** | PENDING |
 
 ---
@@ -53,5 +53,18 @@ Guard-SLM is an ultra-low latency (<20ms) Small Language Model (SLM) security fi
 - **High-Concurrency Load Testing (`src/proxy/benchmark.py`)**:
   - Fired 1,000 concurrent asynchronous requests to live `/v1/guard/scan` endpoint.
   - Validated throughput (82.19 Requests/sec) and pipeline latency distributions under heavy load.
-- **Verification**:
-  - 100% test pass rate across all 18 test cases in `tests/test_proxy.py`, `tests/test_model.py`, and `tests/test_dataset.py`.
+
+### Phase 5: Real-Time Security Dashboard & Telemetry Stream
+- **Database Engine (`src/proxy/db.py`)**:
+  - Asynchronous SQLite logger using `aiosqlite` targeting `data/telemetry.db`.
+  - `init_db()` auto-initializes the `scans` table on server startup.
+  - `log_scan()` captures raw prompt, normalized prompt, decision, threat type, confidence, and latency.
+- **Proxy Telemetry Integration**:
+  - Integrated into FastAPI `/v1/guard/scan` via `BackgroundTasks` for zero-latency impact on responses.
+  - Verified live writing: recorded initial scan events and confirmed Base64/Unicode unmasking fields.
+- **Live Command Center (`src/dashboard/app.py`)**:
+  - Streamlit dashboard displaying real-time scan volume, block rate, average latency, and rolling RPS.
+  - Plotly donut chart visualizes Safe vs. Threat distributions.
+  - Latency distribution histogram.
+  - Live data feed displays raw payloads alongside unmasked payloads to demonstrate Base64 and Unicode normalization in real time.
+  - Verified headless launch and health check on port 8501.

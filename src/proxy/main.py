@@ -4,11 +4,12 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional, Tuple
 
-from fastapi import FastAPI, status
+from fastapi import BackgroundTasks, FastAPI, status
 import numpy as np
 import onnxruntime as ort
 from transformers import AutoTokenizer
 
+from src.proxy.db import init_db, log_scan
 from src.proxy.normalization import PayloadNormalizer
 from src.proxy.schemas import SecurityRequest, SecurityResponse
 
@@ -103,7 +104,8 @@ engine = GuardONNXEngine(model_dir="src/model/onnx_guard")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: Load ONNX model and tokenizer globally once
+    # Startup: Initialize telemetry database and ONNX engine
+    await init_db()
     engine.load()
     yield
     # Shutdown
@@ -112,7 +114,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Guard-SLM Security Proxy",
     description="Sub-20ms ultra-low latency prompt injection and jailbreak firewall.",
-    version="0.2.0",
+    version="0.3.0",
     lifespan=lifespan,
 )
 
@@ -128,7 +130,10 @@ async def health_check():
     status_code=status.HTTP_200_OK,
     summary="Scan prompt for injection/jailbreak attacks",
 )
-async def guard_scan(request: SecurityRequest) -> SecurityResponse:
+async def guard_scan(
+    request: SecurityRequest,
+    background_tasks: BackgroundTasks,
+) -> SecurityResponse:
     start_time = time.perf_counter()
 
     # Step 1: Normalization Defense Layer
@@ -139,10 +144,22 @@ async def guard_scan(request: SecurityRequest) -> SecurityResponse:
 
     # Step 3: Latency measurement in ms
     latency_ms = (time.perf_counter() - start_time) * 1000.0
+    rounded_latency = round(latency_ms, 3)
+
+    # Step 4: Non-blocking asynchronous telemetry dispatch via background tasks
+    background_tasks.add_task(
+        log_scan,
+        original_prompt=request.prompt,
+        normalized_prompt=normalized_text,
+        decision=decision,
+        threat_type=threat_type,
+        confidence=confidence,
+        latency_ms=rounded_latency,
+    )
 
     return SecurityResponse(
         decision=decision,
         threat_type=threat_type,
         confidence=confidence,
-        latency_ms=round(latency_ms, 3),
+        latency_ms=rounded_latency,
     )

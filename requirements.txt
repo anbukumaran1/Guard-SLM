@@ -13,3 +13,6 @@ transformers[torch]
 sentencepiece
 optimum[onnxruntime]
 evaluate
+streamlit
+plotly
+aiosqlite
